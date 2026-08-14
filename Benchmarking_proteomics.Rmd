@@ -1,0 +1,867 @@
+---
+title: "Benchmarking proteomics"
+author: "Ema Svetlicic"
+date: "2024-04-21"
+output: html_document
+---
+
+
+
+
+# 1. Import datasets.
+
+The datasets are output from 4 different softwares used (MaxQuant, Proteome Discoverer, DIA-NN and Spectronaut). They were pre-processed with custom script to make them all have the same format (dfWide_xx.txt)
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(limma)
+
+
+dfWide_MQ <- read.delim(
+  "dfWide_MQ.txt",
+  sep = " ",
+  header = TRUE,
+  check.names = FALSE,
+  stringsAsFactors = FALSE
+)
+
+dfWide_SN <- read.delim(
+  "dfWide_SN.txt",
+  sep = " ",
+  header = TRUE,
+  check.names = FALSE,
+  stringsAsFactors = FALSE
+)
+
+dfWide_diann <- read.delim(
+  "dfWide_diann.txt",
+  sep = " ",
+  header = TRUE,
+  check.names = FALSE,
+  stringsAsFactors = FALSE
+)
+
+dfWide_PD <- read.delim(
+  "dfWide_PD.txt",
+  sep = " ",
+  header = TRUE,
+  check.names = FALSE,
+  stringsAsFactors = FALSE
+)
+
+dfWide_TMT<-read.delim("dfWide_TMT.txt",
+  sep=" ",
+   header=TRUE,
+   check.names=FALSE,
+   stringsAsFactors=FALSE
+)
+
+
+ED<-read.delim("Bench/experimental_design.txt",
+  sep="\t",
+   header=TRUE,
+   check.names=FALSE,
+   stringsAsFactors=FALSE
+)
+
+```
+
+
+
+# 2. Create a list of dfWides
+
+```{r}
+
+df_list <- list(
+  DIA_NN = dfWide_diann,
+  MQ = dfWide_MQ,
+  PD = dfWide_PD,
+  SN = dfWide_SN,
+  TMT= dfWide_TMT
+)
+
+```
+
+# 3. Load the annotation file (which protein belong to S. aureus or H. sapiens)
+
+```{r}
+annot<-read.delim("annotation_file.txt", header=TRUE)
+
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+
+annot_category <- annot %>%
+  mutate(
+    Category = case_when(
+      grepl("Homo sapiens", Organism) ~ "HS",
+      grepl("Staphylococcus aureus", Organism) ~ "SA",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  select(Entry, Category)
+
+
+
+#  FUNCTION TO CALCULATE HS AND SA COUNTS
+
+get_counts <- function(df, method) {
+  
+  df_long <- df %>%
+    tibble::rownames_to_column("Entry") %>%
+    pivot_longer(
+      cols = -Entry,
+      names_to = "Sample",
+      values_to = "Value"
+    ) %>%
+    left_join(
+      annot_category %>%
+        distinct(Entry, .keep_all = TRUE),
+      by = "Entry"
+    )
+  
+  counts <- df_long %>%
+    filter(Category %in% c("HS", "SA")) %>%
+    group_by(Sample, Category) %>%
+    summarise(
+      Count = n_distinct(Entry[!is.na(Value)]),
+      .groups = "drop"
+    ) %>%
+    mutate(Method = method)
+  
+  return(counts)
+}
+
+
+count_results <- lapply(
+  names(df_list),
+  function(x) {
+    get_counts(
+      df = df_list[[x]],
+      method = x
+    )
+  }
+)
+
+all_counts <- bind_rows(count_results)
+
+
+
+# PLOT THE NUMBER OF IDENTFIED PROTEINS FOR HS AND SA
+
+ggplot(
+  all_counts,
+  aes(
+    x = Method,
+    y = Count,
+    fill = Category
+  )
+) +
+  geom_boxplot(
+    position = position_dodge(width = 0.75),
+    width = 0.6,
+    outlier.shape = NA
+  ) +
+  geom_jitter(
+    aes(group = Category),
+    position = position_jitterdodge(
+      jitter.width = 0.15,
+      dodge.width = 0.75
+    ),
+    size = 1.5,
+    alpha = 0.6
+  ) +
+  scale_fill_manual(
+    values = c(
+      "HS" = "royalblue3",
+      "SA" = "coral2"
+    )
+  ) +
+  labs(
+    x = "Quantification method",
+    y = "Number of quantified proteins",
+    fill = "Organism"
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "top",
+    panel.grid.major.x = element_blank()
+  )
+
+```
+
+# 4. Explore missing values in the datasets
+
+```{r}
+library(naniar)
+
+missing_long <- lapply(names(df_list), function(method) {
+
+  df <- df_list[[method]]
+
+  df %>%
+    mutate(Accession = rownames(df)) %>%
+    pivot_longer(
+      cols = -Accession,
+      names_to = "Sample",
+      values_to = "Value"
+    ) %>%
+    mutate(
+      Missing = is.na(Value),
+      Method = method
+    )
+
+}) %>%
+  bind_rows()
+
+
+ggplot(
+  missing_long,
+  aes(x = Sample, y = Accession, fill = Missing)
+) +
+  geom_raster() +
+  facet_wrap(~Method, scales = "free_y") +
+  scale_fill_manual(
+    values = c(
+      "FALSE" = "coral",
+      "TRUE" = "black"
+    ),
+    labels = c(
+      "FALSE" = "Present",
+      "TRUE" = "Missing"
+    )
+  ) +
+  labs(
+    x = "Sample",
+    y = "Protein",
+    fill = ""
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    axis.text.x = element_text(
+      angle = 90,
+      hjust = 1
+    ),
+    panel.grid = element_blank(),
+    strip.text = element_text(face = "bold")
+  )
+```
+
+TMT does not have missing values since the samples are multiplexed
+
+# 5. Plot the PCA plots
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(patchwork)
+
+
+# PCA function
+
+
+run_pca <- function(df, method, ED) {
+
+
+  filtered_dfWide <- na.omit(df)
+
+  # prepare annotations
+  condition <- ED$Group
+
+  pca_data <- prcomp(t(filtered_dfWide))
+
+  pca_data_perc <- round(
+    100 * pca_data$sdev^2 / sum(pca_data$sdev^2),
+    1
+  )
+
+  df_pca_data <- data.frame(
+    PC1 = pca_data$x[,1],
+    PC2 = pca_data$x[,2],
+    sample = colnames(filtered_dfWide),
+    condition = condition
+  )
+
+
+
+  p <- ggplot(
+    df_pca_data,
+    aes(PC1, PC2, color = condition)
+  ) +
+    geom_point(size = 3) +
+    theme_bw() +
+    stat_ellipse(
+      geom = "polygon",
+      aes(fill = condition),
+      alpha = 0.05,
+      show.legend = FALSE,
+      level = 0.80
+    ) +
+    labs(
+      title = method,
+      x = paste0("PC1  ", pca_data_perc[1], " %"),
+      y = paste0("PC2  ", pca_data_perc[2], " %")
+    )
+
+  return(p)
+}
+
+
+pca_plots <- lapply(
+  names(df_list),
+  function(method) {
+
+    run_pca(
+      df = df_list[[method]],
+      method = method,
+      ED = ED
+    )
+
+  }
+)
+
+names(pca_plots) <- names(df_list)
+```
+
+```{r}
+
+
+pca_combined <- wrap_plots(
+  pca_plots,
+  ncol = 2
+)
+
+pca_combined
+```
+
+
+
+# 6. Plot coefficient of variation for the proteins 
+Assess the reproducibility and dispersion of protein quantification across the different quantification methods.
+
+
+```{r}
+
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+# ---------------------------------------------------------
+# CV calculation for all 5 methods
+# ---------------------------------------------------------
+
+method_names <- c(
+  "PD"     = "PD",
+  "MQ"     = "MQ",
+  "TMT"    = "TMT",
+  "DIA_NN" = "DIA-NN",
+  "SN"     = "SN"
+)
+
+cv_results <- lapply(names(df_list), function(method) {
+  
+  df <- df_list[[method]]
+  
+  # Convert wide format to long format
+  df_long <- df %>%
+    tibble::rownames_to_column(var = "Accession") %>%
+    pivot_longer(
+      cols = -Accession,
+      names_to = "Name",
+      values_to = "Abundance"
+    )
+  
+  # Add experimental design
+  df_long <- df_long %>%
+    left_join(
+      ED %>% select(Name, Group),
+      by = "Name"
+    )
+  
+  # Calculate CV for each protein within each group
+  cv <- df_long %>%
+    group_by(Accession, Group) %>%
+    summarise(
+      CV = (
+        sd(Abundance, na.rm = TRUE) /
+        mean(Abundance, na.rm = TRUE)
+      ) * 100,
+      .groups = "drop"
+    ) %>%
+    mutate(
+      Method = method_names[method]
+    )
+  
+  cv
+})
+
+# ---------------------------------------------------------
+# Combine all 5 methods
+# ---------------------------------------------------------
+
+cv_data_combined <- bind_rows(cv_results)
+
+# Set method order
+cv_data_combined$Method <- factor(
+  cv_data_combined$Method,
+  levels = c(
+    "PD",
+    "MQ",
+    "TMT",
+    "DIA-NN",
+    "SN"
+  )
+)
+
+# Remove invalid CV values
+cv_data_combined <- cv_data_combined %>%
+  filter(
+    is.finite(CV),
+    !is.na(Group)
+  )
+
+# ---------------------------------------------------------
+# PLOT
+# ---------------------------------------------------------
+
+p_CV <- ggplot(
+  cv_data_combined,
+  aes(
+    x = Group,
+    y = CV,
+    fill = Method
+  )
+) +
+  
+  geom_violin(
+    alpha = 0.5,
+    position = position_dodge(width = 0.9),
+    trim = TRUE
+  ) +
+  
+  geom_boxplot(
+    width = 0.12,
+    position = position_dodge(width = 0.9),
+    outlier.size = 0.5
+  ) +
+  
+  labs(
+    title = "Coefficient of Variation across quantification methods",
+    x = "Analysis",
+    y = "CV (%)",
+    fill = "Method"
+  ) +
+  
+  theme_minimal() +
+  
+  scale_fill_manual(
+    values = c(
+      "PD" = "steelblue3",
+      "MQ" = "tomato",
+      "TMT" = "forestgreen",
+      "DIA-NN" = "gold",
+      "SN" = "orchid"
+    )
+  )
+
+p_CV
+
+
+```
+
+
+
+# 7. Run differential expression analysis 
+ To estimate quantification accuracy of the tested analysis methods
+
+
+```{r}
+run_DE <- function(df, method) {
+  
+
+  df <- as.data.frame(df)
+  
+  df[] <- lapply(df, as.numeric)
+  
+
+  
+  dfWide_log <- log2(df)
+  
+  
+  # Remove rows containing only NA
+  dfWide_log <- dfWide_log[
+    rowSums(!is.na(dfWide_log)) > 0,
+    ,
+    drop = FALSE
+  ]
+  
+
+  
+  condition <- as.factor(ED$Group)
+  
+  cond <- as.factor(condition)
+  
+  design <- model.matrix(~0 + cond)
+  
+  colnames(design) <- gsub(
+    "cond",
+    "",
+    colnames(design)
+  )
+  
+  
+
+  
+  if (ncol(dfWide_log) != nrow(ED)) {
+    stop(
+      paste(
+        method,
+        ": number of samples in dataframe does not match ED"
+      )
+    )
+  }
+  
+
+# Contrasts
+
+  x <- c(
+    "B-A",
+    "C-A",
+    "D-A",
+    "D-B",
+    "B-D",
+    "D-C"
+  )
+  
+  contrast <- makeContrasts(
+    contrasts = x,
+    levels = design
+  )
+  
+  
+
+  
+  fit1 <- lmFit(
+    dfWide_log,
+    design
+  )
+  
+  fit2 <- contrasts.fit(
+    fit1,
+    contrasts = contrast
+  )
+  
+  fit3 <- eBayes(fit2)
+  
+  
+
+# Extract comparisons
+
+  
+  T1 <- topTable(
+    fit3,
+    coef = 1,
+    n = Inf
+  )
+  
+  T2 <- topTable(
+    fit3,
+    coef = 2,
+    n = Inf
+  )
+  
+  T3 <- topTable(
+    fit3,
+    coef = 3,
+    n = Inf
+  )
+  
+  
+
+# Add accession from rownames
+
+  
+  T1$Accession <- rownames(T1)
+  T2$Accession <- rownames(T2)
+  T3$Accession <- rownames(T3)
+  
+  
+
+# Add annotation
+
+  
+  T1 <- T1 %>%
+    left_join(
+      annot_category,
+      by = c("Accession" = "Entry")
+    )
+  
+  T2 <- T2 %>%
+    left_join(
+      annot_category,
+      by = c("Accession" = "Entry")
+    )
+  
+  T3 <- T3 %>%
+    left_join(
+      annot_category,
+      by = c("Accession" = "Entry")
+    )
+  
+  
+
+  T1 <- T1 %>%
+    filter(Category %in% c("HS", "SA"))
+  
+  T2 <- T2 %>%
+    filter(Category %in% c("HS", "SA"))
+  
+  T3 <- T3 %>%
+    filter(Category %in% c("HS", "SA"))
+  
+  
+
+# Combine comparisons
+
+  
+  result <- bind_rows(
+    
+    T1 %>%
+      select(
+        Accession,
+        Category,
+        logFC,
+        P.Value,
+        adj.P.Val
+      ) %>%
+      mutate(
+        Comparison = "B-A",
+        Method = method
+      ),
+    
+    T2 %>%
+      select(
+        Accession,
+        Category,
+        logFC,
+        P.Value,
+        adj.P.Val
+      ) %>%
+      mutate(
+        Comparison = "C-A",
+        Method = method
+      ),
+    
+    T3 %>%
+      select(
+        Accession,
+        Category,
+        logFC,
+        P.Value,
+        adj.P.Val
+      ) %>%
+      mutate(
+        Comparison = "D-A",
+        Method = method
+      )
+  )
+  
+  
+  return(result)
+}
+```
+
+```{r}
+DE_results <- lapply(
+  names(df_list),
+  function(x) {
+    
+    run_DE(
+      df = df_list[[x]],
+      method = x
+    )
+    
+  }
+)
+
+names(DE_results) <- names(df_list)
+
+
+
+DE_results <- lapply(
+  names(df_list),
+  function(x) {
+    run_DE(df_list[[x]], x)
+  }
+)
+
+names(DE_results) <- names(df_list)
+
+DE_all <- bind_rows(DE_results)
+```
+
+
+# 8. Plot logFC and compare to the expected values (theoretical)
+
+```{r}
+thresholds <- data.frame(
+  Category = c(
+    "HS", "HS", "HS",
+    "SA", "SA", "SA"
+  ),
+  Comparison = c(
+    "B-A", "C-A", "D-A",
+    "B-A", "C-A", "D-A"
+  ),
+  yintercept = c(
+    -0.59, -1.58, -2.45,
+     0.42, 0.69, 0.85
+  ),
+  line_colour = c(
+    "blue", "green", "red",
+    "blue", "green", "red"
+  )
+)
+
+
+p_logFC <- ggplot(
+  DE_all,
+  aes(
+    x = Method,
+    y = logFC,
+    fill = Method
+  )
+) +
+
+  geom_boxplot(
+    outlier.size = 0.3
+  ) +
+
+  facet_grid(
+    Category ~ Comparison
+  ) +
+
+ 
+
+  # Your HS and SA reference lines
+  geom_hline(
+    data = thresholds,
+    aes(
+      yintercept = yintercept,
+      color = line_colour
+    ),
+    linetype = "dashed",
+    inherit.aes = FALSE
+  ) +
+
+  scale_color_identity() +
+
+  labs(
+    title = "Protein log2 fold changes across quantification methods",
+    x = "Method",
+    y = "log2 fold change"
+  ) +
+
+  theme_bw() +
+
+  theme(
+    axis.text.x = element_text(
+      angle = 45,
+      hjust = 1
+    ),
+    legend.position = "none"
+  )
+
+
+p_logFC
+```
+
+# 9. Plot the number of proteins with significant and non-significant p-values
+To assess the consistency and performance of the different quantification methods.
+Ideally, all proteins should show statistically significant p-values.
+
+```{r}
+
+
+pval_plot_data <- DE_all %>%
+  mutate(
+    Significance = ifelse(
+      adj.P.Val < 0.05,
+      "Significant",
+      "Not significant"
+    )
+  ) %>%
+  group_by(Method, Comparison, Significance) %>%
+  summarise(
+    N = n(),
+    .groups = "drop"
+  ) %>%
+  group_by(Method, Comparison) %>%
+  mutate(
+    Percentage = 100 * N / sum(N)
+  ) %>%
+  ungroup()
+
+# Set method order
+pval_plot_data$Method <- factor(
+  pval_plot_data$Method,
+  levels = c("PD", "MQ", "TMT", "DIA_NN", "SN")
+)
+
+# Plot
+p_pvalues <- ggplot(
+  pval_plot_data,
+  aes(
+    x = Method,
+    y = Percentage,
+    fill = Significance
+  )
+) +
+  geom_col(
+    position = "stack",
+    width = 0.7
+  ) +
+  facet_wrap(
+    ~ Comparison
+  ) +
+  labs(
+    title = "Statistical significance across quantification methods",
+    x = "Quantification method",
+    y = "Proteins (%)",
+    fill = "P-value"
+  ) +
+  scale_fill_manual(
+    values = c(
+      "Significant" = "firebrick3",
+      "Not significant" = "grey80"
+    )
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(
+      angle = 45,
+      hjust = 1
+    ),
+    strip.background = element_rect(
+      fill = "grey90"
+    )
+  )
+
+p_pvalues
+```
+
+NA : adjusted p-values for proteins where there isn't enough valid quantitative information to estimate the statistics.
