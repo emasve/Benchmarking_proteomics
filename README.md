@@ -9,3 +9,5 @@ Proteomics has advanced substantially, enabling detailed analysis of protein fun
 
 
 Svetlicic, Ema; Jers, Carsten; Mijakovic, Ivan; ",Benchmarking proteomics acquisition and data analysis strategies,Proteomics of Staphylococcus aureus: Understanding pathogenicity and identification of diagnostic biomarkers,24,2024
+
+[![View Full Analysis](https://img.shields.io/badge/View%20Full%20Analysis-GitHub%20Pages-blue?style=for-the-badge)](https://emasve.github.io/Benchmarking_proteomics/)
